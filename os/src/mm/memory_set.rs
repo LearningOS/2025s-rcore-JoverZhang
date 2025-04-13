@@ -12,6 +12,7 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::arch::asm;
+use core::ops::IndexMut;
 use lazy_static::*;
 use riscv::register::satp;
 
@@ -62,6 +63,58 @@ impl MemorySet {
             MapArea::new(start_va, end_va, MapType::Framed, permission),
             None,
         );
+    }
+
+    /// Create the area if it doesn't exist
+    pub fn create_area(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+        permission: MapPermission,
+    ) -> Result<(), &'static str> {
+        assert!(start_va.aligned(), "start_va is not aligned");
+
+        // Check if the area already exists
+        for area in self.areas.iter() {
+            let range = VirtAddr::from(area.vpn_range.get_start())
+                ..VirtAddr::from(area.vpn_range.get_end());
+            if range.contains(&start_va) && range.contains(&end_va) {
+                return Err("Area already exists");
+            }
+        }
+
+        // Create the area in the memory set
+        self.push(
+            MapArea::new(start_va, end_va, MapType::Framed, permission),
+            None,
+        );
+        Ok(())
+    }
+    /// Delete the area if it exists
+    pub fn delete_area(
+        &mut self,
+        start_va: VirtAddr,
+        end_va: VirtAddr,
+    ) -> Result<(), &'static str> {
+        assert!(start_va.aligned(), "start_va is not aligned");
+
+        // Find the area to delete
+        let pos = match self.areas.iter().position(|a| {
+            VirtAddr::from(a.vpn_range.get_start()) == start_va
+                && VirtAddr::from(a.vpn_range.get_end()) == end_va
+        }) {
+            Some(pos) => pos,
+            None => return Err("Area not found"),
+        };
+
+        // Unmap the area from the page table
+        let area = self.areas.index_mut(pos);
+        area.unmap(&mut self.page_table);
+
+        // Remove the area from the memory set
+        self.areas.remove(pos);
+
+        Ok(())
     }
     fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);

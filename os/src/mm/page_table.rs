@@ -1,5 +1,8 @@
 //! Implementation of [`PageTableEntry`] and [`PageTable`].
 
+use crate::mm::MapPermission;
+use crate::task::current_user_token;
+
 use super::{frame_alloc, FrameTracker, PhysPageNum, StepByOne, VirtAddr, VirtPageNum};
 use alloc::vec;
 use alloc::vec::Vec;
@@ -159,23 +162,112 @@ impl PageTable {
 
 /// Translate&Copy a ptr[u8] array with LENGTH len to a mutable u8 Vec through page table
 pub fn translated_byte_buffer(token: usize, ptr: *const u8, len: usize) -> Vec<&'static mut [u8]> {
+    do_translated_byte_buffer(token, ptr, len, MapPermission::empty()).unwrap()
+}
+
+fn do_translated_byte_buffer(
+    token: usize,
+    ptr: *const u8,
+    len: usize,
+    map_perm: MapPermission,
+) -> Option<Vec<&'static mut [u8]>> {
     let page_table = PageTable::from_token(token);
-    let mut start = ptr as usize;
+    let start = ptr as usize;
+    if !is_sv39_valid(start) {
+        return None;
+    }
     let end = start + len;
+    if !is_sv39_valid(end) {
+        return None;
+    }
     let mut v = Vec::new();
-    while start < end {
-        let start_va = VirtAddr::from(start);
-        let mut vpn = start_va.floor();
-        let ppn = page_table.translate(vpn).unwrap().ppn();
-        vpn.step();
-        let mut end_va: VirtAddr = vpn.into();
-        end_va = end_va.min(VirtAddr::from(end));
-        if end_va.page_offset() == 0 {
-            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..]);
+
+    let mut start = VirtAddr::from(start);
+    let end = VirtAddr::from(end);
+
+    while start.0 < end.0 {
+        let mut vpn = start.floor();
+
+        let pte = if let Some(pte) = page_table.translate(vpn) {
+            if !pte.is_valid() {
+                return None;
+            }
+            if map_perm.contains(MapPermission::R) && !pte.readable() {
+                return None;
+            }
+            if map_perm.contains(MapPermission::W) && !pte.writable() {
+                return None;
+            }
+            if map_perm.contains(MapPermission::X) && !pte.executable() {
+                return None;
+            }
+            pte
         } else {
-            v.push(&mut ppn.get_bytes_array()[start_va.page_offset()..end_va.page_offset()]);
+            return None;
+        };
+
+        let ppn = pte.ppn();
+        vpn.step();
+
+        let mut end_va: VirtAddr = vpn.into();
+        end_va = end_va.min(end);
+
+        if end_va.page_offset() == 0 {
+            v.push(&mut ppn.get_bytes_array()[start.page_offset()..]);
+        } else {
+            v.push(&mut ppn.get_bytes_array()[start.page_offset()..end_va.page_offset()]);
         }
         start = end_va.into();
     }
-    v
+    Some(v)
+}
+
+/// Read data from the virtual address
+pub fn read_va<T>(va: VirtAddr) -> Option<T> {
+    let len = core::mem::size_of::<T>();
+
+    let mut bufs = do_translated_byte_buffer(current_user_token(), va.0 as *const u8, len, MapPermission::R)?;
+
+    let mut bytes = vec![0; len];
+    let mut i = 0;
+
+    for buf in bufs.iter_mut() {
+        for p in buf.iter_mut() {
+            bytes[i] = *p;
+
+            i += 1;
+        }
+    }
+
+    Some(unsafe { core::ptr::read_unaligned(bytes.as_ptr() as *const T) })
+}
+
+/// Write data to the virtual address
+pub fn write_va<T>(va: VirtAddr, val: &T) -> Option<()> {
+    // Take bytes from the value
+    let bytes: &[u8] = unsafe {
+        core::slice::from_raw_parts(val as *const T as *const u8, core::mem::size_of::<T>())
+    };
+
+    // Get target physical address
+    let mut bufs = do_translated_byte_buffer(current_user_token(), va.0 as *const u8, bytes.len(), MapPermission::W)?;
+    let mut i = 0;
+
+    // Write bytes to the target physical address
+    for buf in bufs.iter_mut() {
+        for p in buf.iter_mut() {
+            *p = bytes[i];
+
+            i += 1;
+        }
+    }
+
+    Some(())
+}
+
+/// Check if the virtual address is valid in SV39
+pub fn is_sv39_valid(addr: usize) -> bool {
+    // Sign-extend bit 38: if bit 38 == 0 → upper bits must be 0
+    //                     if bit 38 == 1 → upper bits must be 1
+    (addr >> 39 == 0) || (addr >> 39 == (1 << 25) - 1) // 25 = 64 - 39
 }

@@ -4,6 +4,7 @@ use crate::config::TRAP_CONTEXT_BASE;
 use crate::mm::{
     kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
 };
+use crate::syscall::MAX_SYSCALL_ID;
 use crate::trap::{trap_handler, TrapContext};
 
 /// The task control block (TCB) of a task.
@@ -28,6 +29,9 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The syscall tracer
+    pub syscall_tracer: SyscallTracer,
 }
 
 impl TaskControlBlock {
@@ -63,6 +67,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_tracer: SyscallTracer::new(),
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -109,4 +114,30 @@ pub enum TaskStatus {
     Running,
     /// exited
     Exited,
+}
+
+const TIMES_SIZE: usize = MAX_SYSCALL_ID + 1;
+
+/// The syscall tracer
+#[derive(Copy, Clone)]
+pub struct SyscallTracer {
+    pub counts: [usize; TIMES_SIZE],
+}
+
+impl SyscallTracer {
+    pub fn new() -> Self {
+        Self {
+            counts: [0; TIMES_SIZE],
+        }
+    }
+
+    pub fn increase_count(&mut self, syscall_id: usize) {
+        assert!(syscall_id < TIMES_SIZE, "syscall_id out of range");
+        self.counts[syscall_id] += 1;
+    }
+
+    pub fn get_count(&self, syscall_id: usize) -> isize {
+        assert!(syscall_id < TIMES_SIZE, "syscall_id out of range");
+        self.counts[syscall_id] as isize
+    }
 }

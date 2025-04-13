@@ -15,6 +15,7 @@ mod switch;
 mod task;
 
 use crate::loader::{get_app_data, get_num_app};
+use crate::mm::{MapPermission, PhysAddr, VirtAddr};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
@@ -153,6 +154,29 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// Convert a virtual address to a physical address
+    pub fn current_read_va_2_pa(&self, va: VirtAddr) -> Option<PhysAddr> {
+        let inner = self.inner.exclusive_access();
+        let vpn = va.floor();
+        if let Some(pte) = inner.tasks[inner.current_task].memory_set.translate(vpn) {
+            let pa = PhysAddr::from(pte.ppn());
+            Some(PhysAddr::from(pa.0 | va.page_offset()))
+        } else {
+            None
+        }
+    }
+    /// Convert a virtual address to a physical address
+    pub fn current_write_va_2_pa(&self, va: VirtAddr) -> Option<PhysAddr> {
+        let inner = self.inner.exclusive_access();
+        let vpn = va.floor();
+        if let Some(pte) = inner.tasks[inner.current_task].memory_set.translate(vpn) {
+            let pa = PhysAddr::from(pte.ppn());
+            Some(PhysAddr::from(pa.0 | va.page_offset()))
+        } else {
+            None
+        }
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +225,33 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// Trace system call for current task
+pub fn trace_syscall(syscall_id: usize) {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+    inner.tasks[current].syscall_tracer.increase_count(syscall_id);
+}
+
+/// Get the syscall count for current task
+pub fn get_syscall_count(syscall_id: usize) -> isize {
+    let inner = TASK_MANAGER.inner.exclusive_access();
+    inner.tasks[inner.current_task].syscall_tracer.get_count(syscall_id)
+}
+
+/// Create memory mapping for current task
+pub fn current_mmap(start_va: VirtAddr, end_va: VirtAddr, map_perm: MapPermission) -> Result<(), &'static str> {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    inner.tasks[current].memory_set.create_area(start_va, end_va, map_perm)
+}
+
+/// Delete memory mapping for current task
+pub fn current_munmap(start_va: VirtAddr, end_va: VirtAddr) -> Result<(), &'static str> {
+    let mut inner = TASK_MANAGER.inner.exclusive_access();
+    let current = inner.current_task;
+
+    inner.tasks[current].memory_set.delete_area(start_va, end_va)
 }
