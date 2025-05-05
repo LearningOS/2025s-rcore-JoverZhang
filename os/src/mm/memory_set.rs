@@ -76,9 +76,14 @@ impl MemorySet {
 
         // Check if the area already exists
         for area in self.areas.iter() {
-            let range = VirtAddr::from(area.vpn_range.get_start())
-                ..VirtAddr::from(area.vpn_range.get_end());
-            if range.contains(&start_va) && range.contains(&end_va) {
+            let area_start = area.vpn_range.get_start();
+            let area_end = area.vpn_range.get_end();
+            let start_vpn = start_va.floor();
+            let end_vpn = end_va.ceil();
+
+            if area_start <= start_vpn && start_vpn < area_end
+                || area_start < end_vpn && end_vpn <= area_end
+            {
                 return Err("Area already exists");
             }
         }
@@ -98,10 +103,12 @@ impl MemorySet {
     ) -> Result<(), &'static str> {
         assert!(start_va.aligned(), "start_va is not aligned");
 
+        let start_vpn = start_va.floor();
+        let end_vpn = end_va.ceil();
+
         // Find the area to delete
         let pos = match self.areas.iter().position(|a| {
-            VirtAddr::from(a.vpn_range.get_start()) == start_va
-                && VirtAddr::from(a.vpn_range.get_end()) == end_va
+            a.vpn_range.get_start() == start_vpn && a.vpn_range.get_end() == end_vpn
         }) {
             Some(pos) => pos,
             None => return Err("Area not found"),
